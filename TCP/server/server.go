@@ -28,7 +28,7 @@ type Client struct {
 	name        string
 	logFile     *os.File
 	lastSeen    time.Time
-	lastMsgTime time.Time // Track last message time
+	lastMsgTime time.Time
 }
 
 type Server struct {
@@ -99,7 +99,7 @@ func handleConnection(conn net.Conn, server *Server) {
 		name:        clientAddr,
 		logFile:     logFile,
 		lastSeen:    time.Now(),
-		lastMsgTime: time.Now(), // Initialize message time
+		lastMsgTime: time.Now(),
 	}
 	server.register <- client
 
@@ -128,15 +128,13 @@ func handleConnection(conn net.Conn, server *Server) {
 			delay := now.Sub(client.lastMsgTime).Milliseconds()
 			client.lastMsgTime = now
 
-			// Log delay in server console
 			logEvent(fmt.Sprintf("Delay since last message from %s: %d ms", client.name, delay))
 
 			if len(input) > maxMessageSize {
-				conn.Write([]byte("Message too long.\n"))
+				conn.Write([]byte("Whoa there, message too long.\n"))
 				input = input[:maxMessageSize]
 			}
 
-			// Log message with delay in client log file
 			client.logFile.WriteString(fmt.Sprintf(
 				"[%s] Delay: %dms | %s\n",
 				now.Format(time.RFC3339),
@@ -144,40 +142,45 @@ func handleConnection(conn net.Conn, server *Server) {
 				input,
 			))
 
-			switch input {
-			case "":
-				conn.Write([]byte("yolo...\n"))
-			case "ohhh ":
-				conn.Write([]byte("u messedup!\n"))
-			case "bye", "/quit":
-				conn.Write([]byte("later aligator!\n"))
+			switch {
+			case input == "":
+				conn.Write([]byte("Silence is golden...\n"))
+			case input == "bye" || input == "/quit":
+				conn.Write([]byte("Goodbye traveler. May your packets be swift!\n"))
 				done <- true
 				return
-			case "/time":
-				conn.Write([]byte(time.Now().Format(time.RFC1123) + "\n"))
-			case "/date":
-				conn.Write([]byte(time.Now().Format("2005-01-02") + "\n"))
-			case "/nocknock":
-				conn.Write([]byte("who their?,go study\n"))
-			case "/clients":
+			case input == "/time":
+				conn.Write([]byte("Server Time: " + time.Now().Format("15:04:05 MST") + "\n"))
+			case input == "/date":
+				conn.Write([]byte("Today's Date: " + time.Now().Format("Monday, Jan 2, 2006") + "\n"))
+			case input == "/nocknock":
+				conn.Write([]byte("Who's there? Not your GPA, go study!\n"))
+			case input == "/clients":
 				clientCountLock.Lock()
 				count := clientCount
 				clientCountLock.Unlock()
-				conn.Write([]byte(fmt.Sprintf("Connected clients: %d\n", count)))
-			case "/help":
+				conn.Write([]byte(fmt.Sprintf("There are currently %d humans connected.\n", count)))
+			case input == "/help":
 				conn.Write([]byte("Available commands:\n" +
+					"/name [your_name] - Sets your display name\n" +
 					"/echo [message] - Echoes back your message\n" +
 					"/time - Shows current server time\n" +
 					"/date - Shows current server date\n" +
-					"/nocknock - Tells you to go study\n" +
+					"/nocknock - Joke command\n" +
 					"/clients - Number of connected clients\n" +
 					"/quit or bye - Disconnects you\n"))
-			default:
-				if strings.HasPrefix(input, "/echo ") {
-					conn.Write([]byte(strings.TrimPrefix(input, "/echo ") + "\n"))
-				} else {
-					server.broadcast <- fmt.Sprintf("%s: %s", client.name, input)
+			case strings.HasPrefix(input, "/name "):
+				newName := strings.TrimSpace(strings.TrimPrefix(input, "/name "))
+				if newName != "" {
+					oldName := client.name
+					client.name = newName
+					conn.Write([]byte("Username set to " + newName + "\n"))
+					server.broadcast <- fmt.Sprintf("* %s is now known as %s *", oldName, newName)
 				}
+			case strings.HasPrefix(input, "/echo "):
+				conn.Write([]byte("Echo: " + strings.TrimPrefix(input, "/echo ") + "\n"))
+			default:
+				server.broadcast <- fmt.Sprintf("%s: %s", client.name, input)
 			}
 		}
 		if err := scanner.Err(); err != nil {

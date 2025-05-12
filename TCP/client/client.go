@@ -16,10 +16,11 @@ func main() {
 	}
 	defer conn.Close()
 
-	fmt.Print("Enter your username: ")
-	usernameScanner := bufio.NewScanner(os.Stdin)
-	usernameScanner.Scan()
-	username := usernameScanner.Text()
+	fmt.Print("Enter your name (/name [your_name]): ")
+	nameScanner := bufio.NewScanner(os.Stdin)
+	if nameScanner.Scan() {
+		fmt.Fprintf(conn, "/name %s\n", nameScanner.Text())
+	}
 
 	go func() {
 		var lastMsgTime time.Time
@@ -46,7 +47,7 @@ func main() {
 		if text == "" {
 			continue
 		}
-		_, err := fmt.Fprintf(conn, "[%s] %s\n", username, text)
+		_, err := fmt.Fprintln(conn, text)
 		if err != nil {
 			log.Printf("Error sending message: %v", err)
 			break
