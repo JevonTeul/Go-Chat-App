@@ -16,7 +16,9 @@ const (
 
 type UDPClient struct {
 	addr     *net.UDPAddr
+	username string
 	lastSeen time.Time
+	lastMsg  time.Time
 }
 
 type UDPServer struct {
@@ -37,14 +39,22 @@ func NewUDPServer(port string) (*UDPServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	server := &UDPServer{
+	return &UDPServer{
 		conn:       conn,
 		clients:    make(map[string]*UDPClient),
-		broadcast:  make(chan string),
+		broadcast:  make(chan string, 100),
 		register:   make(chan *net.UDPAddr),
 		unregister: make(chan *net.UDPAddr),
+	}, nil
+}
+
+func (s *UDPServer) logDelay(client *UDPClient, message string) {
+	now := time.Now()
+	if !client.lastMsg.IsZero() {
+		delay := now.Sub(client.lastMsg).Milliseconds()
+		log.Printf("[%s] Delay: %dms | %s", client.username, delay, message)
 	}
-	return server, nil
+	client.lastMsg = now
 }
 
 func (s *UDPServer) Run() {
@@ -57,32 +67,38 @@ func (s *UDPServer) Run() {
 	for {
 		n, addr, err := s.conn.ReadFromUDP(buf)
 		if err != nil {
-			log.Printf("Error reading UDP packet: %v", err)
-			continue
-		}
-		message := strings.TrimSpace(string(buf[:n]))
-		if message == "" {
+			log.Printf("Read error: %v", err)
 			continue
 		}
 
-		s.register <- addr
-
-		if message == "/quit" || message == "bye" {
-			s.unregister <- addr
+		msg := strings.TrimSpace(string(buf[:n]))
+		if msg == "" {
 			continue
 		}
 
 		s.mu.Lock()
-		client, ok := s.clients[addr.String()]
-		if ok {
-			client.lastSeen = time.Now()
+		client, exists := s.clients[addr.String()]
+		if !exists {
+			s.clients[addr.String()] = &UDPClient{
+				addr:     addr,
+				username: msg,
+				lastSeen: time.Now(),
+			}
+			log.Printf("New client: %s (%s)", msg, addr)
+			s.mu.Unlock()
+			continue
 		}
 		s.mu.Unlock()
 
-		// Add timestamp to message before broadcasting
-		timestamp := time.Now().Format("15:04:05")
-		broadcastMsg := fmt.Sprintf("[%s] %s: %s", timestamp, addr.String(), message)
-		s.broadcast <- broadcastMsg
+		client.lastSeen = time.Now()
+		s.logDelay(client, msg)
+
+		switch msg {
+		case "/quit", "bye":
+			s.unregister <- addr
+		default:
+			s.broadcast <- fmt.Sprintf("[%s] %s", client.username, msg)
+		}
 	}
 }
 
@@ -92,7 +108,7 @@ func (s *UDPServer) handleBroadcasts() {
 		for _, client := range s.clients {
 			_, err := s.conn.WriteToUDP([]byte(msg), client.addr)
 			if err != nil {
-				log.Printf("Error sending to %s: %v", client.addr.String(), err)
+				log.Printf("Send error to %s: %v", client.username, err)
 			}
 		}
 		s.mu.Unlock()
@@ -107,7 +123,6 @@ func (s *UDPServer) handleRegistrations() {
 				addr:     addr,
 				lastSeen: time.Now(),
 			}
-			log.Printf("Client registered: %s", addr.String())
 		}
 		s.mu.Unlock()
 	}
@@ -116,24 +131,23 @@ func (s *UDPServer) handleRegistrations() {
 func (s *UDPServer) handleUnregistrations() {
 	for addr := range s.unregister {
 		s.mu.Lock()
-		if _, exists := s.clients[addr.String()]; exists {
+		if client, exists := s.clients[addr.String()]; exists {
 			delete(s.clients, addr.String())
-			log.Printf("Client unregistered: %s", addr.String())
+			log.Printf("Client left: %s", client.username)
 		}
 		s.mu.Unlock()
 	}
 }
 
 func (s *UDPServer) cleanupInactiveClients() {
-	ticker := time.NewTicker(inactivityPeriod)
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		now := time.Now()
 		s.mu.Lock()
-		for key, client := range s.clients {
-			if now.Sub(client.lastSeen) > inactivityPeriod {
-				log.Printf("Client timed out due to inactivity: %s", client.addr.String())
-				delete(s.clients, key)
+		for addr, client := range s.clients {
+			if time.Since(client.lastSeen) > inactivityPeriod {
+				delete(s.clients, addr)
+				log.Printf("Timeout: %s", client.username)
 			}
 		}
 		s.mu.Unlock()
@@ -141,12 +155,11 @@ func (s *UDPServer) cleanupInactiveClients() {
 }
 
 func main() {
-	port := "3001"
-	server, err := NewUDPServer(port)
+	server, err := NewUDPServer("3001")
 	if err != nil {
-		log.Fatalf("Failed to start UDP server: %v", err)
+		log.Fatalf("Server failed: %v", err)
 	}
 	defer server.conn.Close()
-	log.Printf("UDP chat server started on :%s", port)
+	log.Printf("UDP server running on :3001")
 	server.Run()
 }
